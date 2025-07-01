@@ -2,6 +2,7 @@
 
 import os, joblib, numpy as np
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -13,9 +14,17 @@ load_dotenv()
 engine = create_engine(os.getenv("DB_URL"))
 SessionLocal = sessionmaker(bind=engine)
 
-model = joblib.load(os.getenv("MODEL_PATH"))  # Naive Bayes calibrado
+model = joblib.load(os.getenv("MODEL_PATH"))
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ── esquemas Pydantic ─────────────────────────────────────────────────
 class OCIn(BaseModel):
@@ -24,6 +33,9 @@ class OCIn(BaseModel):
     total: float = Field(..., gt=0)
     frete: float = Field(..., ge=0)
     qtde: float | None = None
+
+class OCConfirmIn(OCIn):
+    forma_pagamento: str
 
 class OCRet(BaseModel):
     recomendado: str           # classe de maior probabilidade
@@ -57,3 +69,30 @@ def criar_oc(req: OCIn):
         classes=list(classes),
         probs=prob_matrix.tolist()   # mantém formato [[..., ..., ... , ...]]
     )
+
+@app.post("/oc/predict", response_model=OCRet)
+def prever_oc(req: OCIn):
+    X = np.array([[req.total, req.frete]])
+    prob_matrix = model.predict_proba(X)
+    classes = model.classes_
+    recomendado = classes[int(np.argmax(prob_matrix[0]))]
+    return OCRet(
+        recomendado=recomendado,
+        classes=list(classes),
+        probs=prob_matrix.tolist()
+    )
+
+@app.post("/oc/confirm")
+def confirmar_oc(req: OCConfirmIn):
+    db = SessionLocal()
+    db.add(OrdCompra(
+        NroOrdemCompra=req.nro,
+        CodFornecedor=req.fornecedor,
+        QtdeTotal=req.qtde,
+        VlrTotal=req.total,
+        VlrFrete=req.frete,
+        FPPagto=req.forma_pagamento
+    ))
+    db.commit()
+    db.close()
+    return {"status": "ok"}
