@@ -1,5 +1,3 @@
-# main.py — versão que devolve matriz de probabilidades (valores 0-1)
-
 import os, joblib, numpy as np
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,7 +7,6 @@ from sqlalchemy.orm import sessionmaker
 from dotenv import load_dotenv
 from models import OrdCompra
 
-# ── configuração ──────────────────────────────────────────────────────
 load_dotenv()
 engine = create_engine(os.getenv("DB_URL"))
 SessionLocal = sessionmaker(bind=engine)
@@ -26,7 +23,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── esquemas Pydantic ─────────────────────────────────────────────────
 class OCIn(BaseModel):
     nro: int
     fornecedor: int
@@ -38,20 +34,26 @@ class OCConfirmIn(OCIn):
     forma_pagamento: str
 
 class OCRet(BaseModel):
-    recomendado: str           # classe de maior probabilidade
-    classes:     list[str]     # cabeçalho da matriz
-    probs:       list[list[float]]  # matriz (n_amostras × n_classes)
+    recomendado: str
+    classes:     list[str]
+    probs:       list[list[float]]
 
-# ── endpoint ─────────────────────────────────────────────────────────
+CLASSE_MAPEADA = {
+    "Avista": "À vista",
+    "10dias": "10 dias",
+    "30dias": "30 dias",
+    "2x": "Em 2x iguais",
+    "3x": "Em 3x iguais",
+}
+
 @app.post("/oc", response_model=OCRet)
 def criar_oc(req: OCIn):
-    # 1. Previsão
-    X = np.array([[req.total, req.frete]])      # shape (1, 2)
-    prob_matrix = model.predict_proba(X)        # shape (1, 4)
+    X = np.array([[req.total, req.frete]])
+    prob_matrix = model.predict_proba(X)
     classes = model.classes_
-    recomendado = classes[int(np.argmax(prob_matrix[0]))]
+    recomendado_bruto = classes[int(np.argmax(prob_matrix[0]))]
+    recomendado = CLASSE_MAPEADA.get(recomendado_bruto, recomendado_bruto)
 
-    # 2. Persistir OC no banco (FPPagto ainda NULL)
     db = SessionLocal()
     db.add(OrdCompra(
         NroOrdemCompra=req.nro,
@@ -63,11 +65,10 @@ def criar_oc(req: OCIn):
     db.commit()
     db.close()
 
-    # 3. Retornar matriz de probabilidades brutas
     return OCRet(
         recomendado=recomendado,
-        classes=list(classes),
-        probs=prob_matrix.tolist()   # mantém formato [[..., ..., ... , ...]]
+        classes=[CLASSE_MAPEADA.get(c, c) for c in classes],
+        probs=prob_matrix.tolist()
     )
 
 @app.post("/oc/predict", response_model=OCRet)
@@ -75,10 +76,11 @@ def prever_oc(req: OCIn):
     X = np.array([[req.total, req.frete]])
     prob_matrix = model.predict_proba(X)
     classes = model.classes_
-    recomendado = classes[int(np.argmax(prob_matrix[0]))]
+    recomendado_bruto = classes[int(np.argmax(prob_matrix[0]))]
+    recomendado = CLASSE_MAPEADA.get(recomendado_bruto, recomendado_bruto)
     return OCRet(
         recomendado=recomendado,
-        classes=list(classes),
+        classes=[CLASSE_MAPEADA.get(c, c) for c in classes],
         probs=prob_matrix.tolist()
     )
 
